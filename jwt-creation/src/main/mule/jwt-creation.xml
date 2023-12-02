@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:crypto="http://www.mulesoft.org/schema/mule/crypto" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/crypto http://www.mulesoft.org/schema/mule/crypto/current/mule-crypto.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="fb0c2f17-8abb-4532-80f5-599bf52f1148" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<crypto:jce-config name="Crypto_Jce" doc:name="Crypto Jce" doc:id="89f5a5c6-4111-4dca-aad9-961365662f21" keystore="keys/keystore.jks" password="abcdef" />
+	<configuration-properties doc:name="Configuration properties" doc:id="fa63abe9-5ac9-4216-8f13-031d8b31e797" file="configs/common.yaml" />
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="6af6a936-3326-4983-bd7b-7d2f8ca6ceca" >
+		<http:request-connection protocol="HTTPS" host="account-d.docusign.com" port="443" />
+	</http:request-config>
+	<flow name="jwt-creation-flow" doc:id="51f4abf8-f9e7-4c92-b14b-2185c5f62c62" >
+		<http:listener doc:name="Listener" doc:id="01f92eb1-336c-49ea-bd2e-1eb0499e5cef" config-ref="HTTP_Listener_config" path="/jwt"/>
+		<ee:transform doc:name="generate Header and Body" doc:id="4542926f-1b4d-42f0-aee9-4347f849fd6e" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="JWTHeaderNBody" ><![CDATA[%dw 2.0
+import dwl::RSA
+output application/json
+---
+RSA::generateJWTHeaderNBody({
+	"iss": "56f1d783-09f7-4a10-a18f-fdaf65ae7fae",
+	"sub": "59c63a65-fb87-44e4-a8e8-2c3547adea3c",
+	"aud": "account-d.docusign.com",
+	"iat": now() as Number,
+	"exp": (now() + |PT2H|) as Number,
+	"scope": "signature impersonation"
+}, Mule::p('jwt.alg'))]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<crypto:jce-sign doc:name="JCE Sign JWT" doc:id="e4217b4d-332d-4380-9735-e68e8d8f61ed" config-ref="Crypto_Jce" algorithm="SHA256withRSA" target="signpayload">
+			<crypto:content ><![CDATA[#[vars.JWTHeaderNBody]]]></crypto:content>
+			<crypto:jce-key-info >
+				<crypto:jce-asymmetric-key-info keyId="#[Mule::p('keystore.keyid')]" alias="#[Mule::p('keystore.alias')]" password="#[Mule::p('keystore.keypassword')]" />
+			</crypto:jce-key-info>
+		</crypto:jce-sign>
+		<ee:transform doc:name="finalise docusign payload" doc:id="77486aec-265e-4254-b9d5-2743002ef64a" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+import dwl::Common
+output application/x-www-form-urlencoded
+
+var sign=Common::base64URL(vars.signpayload)
+---
+{
+	grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+	assertion: vars.JWTHeaderNBody ++ "." ++ sign
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+			</ee:variables>
+		</ee:transform>
+		<logger level="INFO" doc:name="Log Token" doc:id="cf7f803e-124a-4072-ad7d-1aa5d813ba2a" message="JWT Token is #[payload.assertion]"/>
+		<http:request method="POST" doc:name="Call Docusign" doc:id="47149805-6ca7-4b0f-aae2-67de0923a736" config-ref="HTTP_Request_configuration" path="/oauth/token"/>
+	</flow>
+	<flow name="jwt-creation-flow-default" doc:id="156bc847-00dc-4859-8220-535ceec5de1d" >
+		<http:listener doc:name="Listener" doc:id="fbee0ac2-41d1-4e3f-87bd-82d9f07b004d" config-ref="HTTP_Listener_config" path="/jwtd" />
+		<ee:transform doc:name="generate jwtToken" doc:id="2d47e916-02f1-48a3-950f-de6c56fa4c63" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="jwtToken" ><![CDATA[%dw 2.0
+import jwt::RSA
+output application/json
+
+var privatekey = readUrl("classpath://keys/private_key_pkcs8.pem", "application/java")
+---
+RSA::generateJWT({
+	"iss": "52c4ee6e-ffea-4b8c-aa7f-86ca56a8aa3b",
+	"sub": "59c63a65-fb87-44e4-a8e8-2c3547adea3c",
+	"aud": "account-d.docusign.com",
+	"iat": now() as Number,
+	"exp": (now() + |PT2H|) as Number,
+	"scope": "signature impersonation"
+}, privatekey, "Sha256withRSA")]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<logger level="INFO" doc:name="Log Token" doc:id="795444da-211b-47e9-8c3e-f8e1b7b433b4" message="JWT Token is #[vars.jwtToken]" />
+		<ee:transform doc:name="finalise docusign payload" doc:id="22aea2c4-490f-4d9c-8c52-8dbf1ff7f094" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/x-www-form-urlencoded
+---
+{
+	grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+	assertion: vars.jwtToken
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables />
+		</ee:transform>
+		<http:request method="POST" doc:name="Call Docusign" doc:id="a9df73eb-3af0-4b41-a12b-c4d10318fe8d" config-ref="HTTP_Request_configuration" path="/oauth/token" />
+	</flow>
+</mule>

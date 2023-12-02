@@ -1,0 +1,8 @@
+jwt:
+  alg: "Sha256withRSA"
+
+keystore:
+  keyid: "RSA"
+  alias: "first-key-pair"
+  "keypassword": "abcdef"
+  
